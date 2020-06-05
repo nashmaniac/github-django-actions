@@ -1,0 +1,118 @@
+# name of our workflow
+name: Django CI/CD Workflow
+
+# triggers for our workflow
+on:
+  # opening a pull request to master and develop branch will be a trigger
+  pull_request:
+    branches:
+      - develop
+      - master
+  # any code pushed to master and develop branch will also be a trigger
+  push:
+    branches:
+      - master
+      - develop
+
+
+# three job definition
+jobs:
+  health-check-job: # health check job for testing and code formatting check
+    runs-on: ubuntu-latest # os for running the job
+    services:
+      postgres: # we need a postgres docker image to be booted a side car service to run the tests that needs a db
+        image: postgres
+        env: # the environment variable must match with app/settings.py if block of DATBASES variable otherwise test will fail due to connectivity issue.
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: github-actions
+        ports:
+          - 5432:5432 # exposing 5432 port for application to use
+        # needed because the postgres container does not provide a healthcheck
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - name: Checkout code # checking our the code at current commit that triggers the workflow
+        uses: actions/checkout@v2
+      - name: Cache dependency # caching dependency will make our build faster.
+        uses: actions/cache@v2 # for more info checkout pip section documentation at https://github.com/actions/cache
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      - name: Setup python environment # setting python environment to 3.x
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x' # if you want multiple python version run just use matrix strategy in job config. See the documentation of GitHub Actions
+      - name: Check Python version # checking the python version to see if 3.x is installed.
+        run: python --version
+      - name: Install requirements # install application requirements
+        run: pip install -r requirements.txt
+      - name: Check Syntax # check code formatting
+        run: pycodestyle --statistics .
+      - name: Run Migrations # run migrations to create table in side car db container
+        run: python manage.py migrate
+      - name: Run Test # running tests
+        run: python manage.py test
+
+  package-job: # package job for building and publishing docker images
+    runs-on: ubuntu-latest
+    needs: [health-check-job] # will be fired if and only if health-check-job is passed.
+    if: ${{ github.event_name == 'push' }} # will be fired if the trigger event is a push event.
+    steps:
+      - name: Checkout Code # checking out code.
+        uses: actions/checkout@v2
+      - name: Build & Publish Image # we are using a public GitHub Action to build and publish docker image to our GCR registry.
+        uses: docker/build-push-action@v1
+        env:
+          app_name: app
+        with:
+          username: _json_key # default for gcr.io
+          password: ${{ secrets.GKE_PASSWORD }} # service account file to be set as secret
+          registry: gcr.io # gcr registry domain
+          repository: ${{secrets.GKE_PROJECT}}/github-django-actions/app # GKE_PROJECT is out GCP Project id to be set as secret.
+          tag_with_sha: true # this will tag our image with commit id. For example our image our be gcr.io/project-id/github-django-actions/app:sha-7865423 where 7865423 is the short sha of our commit.
+
+  deploy-job: # deploy job is for deploying our code to google cloud cluster.
+    runs-on: ubuntu-latest
+    needs: [package-job] # will require package-job to be successful for triggering
+    if: ${{ github.event_name == 'push' }} # will be fire if the trigger event is a push event.
+    steps:
+      - name: Checkout code # checking out code.
+        uses: actions/checkout@v2
+      - uses: GoogleCloudPlatform/github-actions/setup-gcloud@master # settings up gcloud cli in our job machine.
+        with:
+          version: '270.0.0'
+          service_account_email: ${{ secrets.GKE_EMAIL }} # email address of our service account that will be created with storage and kubernetes permissions
+          service_account_key: ${{ secrets.GKE_PASSWORD }} # service account file.
+      - name: Set Repo Location # steps required to find the image id of our image from contiainer registry
+        id: repo
+        run: echo "::set-output name=repo_name::gcr.io/${{secrets.GKE_PROJECT}}/github-django-actions/app:sha-$(git rev-parse --short HEAD)" # we are setting the image location as output to be used in later step
+      - name: Check Repo Location
+        run: echo ${{ steps.repo.outputs.repo_name }} # checking our repo location
+      - name: Install Helm # helm installation in our runner for deploying.
+        run: |
+          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3
+          chmod 700 get_helm.sh
+          ./get_helm.sh
+      - name: Connect to kubernetes cluster
+        run: |
+          gcloud container clusters get-credentials ${{secrets.GKE_CLUSTER}} --zone ${{secrets.GKE_ZONE}} --project ${{secrets.GKE_PROJECT}}
+      - name: Helm Deploy # deploying our helm chart to our cluster
+        run: >
+          helm upgrade
+          --install
+          --set image=${{ steps.repo.outputs.repo_name }}
+          --set user=${{ secrets.DB_USER }}
+          --set password=${{ secrets.DB_PASSWORD }}
+          --set host=${{ secrets.DB_HOST }}
+          --set port=${{ secrets.DB_PORT }}
+          --set name=${{ secrets.DB_NAME }}
+          --wait
+          --force
+          --atomic
+          app
+          ./k8s
+      - name: Check pods # checking pod list to see if they are running.
+        run: kubectl get pods
+

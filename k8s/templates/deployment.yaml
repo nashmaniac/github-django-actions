@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-deployment
+  labels:
+    domain: app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      domain: app
+  template:
+    metadata:
+      name: app-template
+      labels:
+        domain: app
+    spec:
+      containers:
+        - name: app-image
+          image: {{.Values.image}}
+          imagePullPolicy: Always
+          env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  key: user
+                  name: app_specific_secrets
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  key: name
+                  name: app_specific_secrets
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: password
+                  name: app_specific_secrets
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  key: host
+                  name: app_specific_secrets
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  key: port
+                  name: app_specific_secrets
+          ports:
+            - containerPort: 8000
