@@ -109,7 +109,6 @@ jobs:
           --set port=${{ secrets.DB_PORT }}
           --set name=${{ secrets.DB_NAME }}
           --wait
-          --force
           --atomic
           app
           ./k8s
