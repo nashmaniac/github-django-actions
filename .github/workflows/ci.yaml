@@ -55,7 +55,7 @@ jobs:
       - name: Run Test # running tests
         run: pip manage.py test # we intentionally made an error. Instead of python  we used pip.
       - uses: nashmaniac/create-issue-action
-        if: ${{ failed() }} # only run when this job is failed.
+        if: ${{ failure() }} # only run when this job is failed.
         name: Create Issue Action
         with:
           title: Build Failed
