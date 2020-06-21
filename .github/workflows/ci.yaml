@@ -1,6 +1,7 @@
 # name of our workflow
 name: Django CI/CD Workflow
 
+
 # triggers for our workflow
 on:
   # opening a pull request to master and develop branch will be a trigger
